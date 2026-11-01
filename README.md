@@ -125,6 +125,17 @@ python3 -m verifier
 | 依赖声明 | `requirements.txt`（只用标准库） |
 | Docker：克隆即可构建，启动自动跑样例，支持挂载 | `Dockerfile`，见上面第 1～5 步 |
 
+### 说明材料索引
+
+| 题目要求的说明材料 | README 章节 | 对应代码 |
+|---|---|---|
+| 接口定义 | 第 4 节"接口定义" | `rlvr_env/api.py` |
+| 任务设计 | 第 2 节"设计思路"、第 3 节"任务设计" | `rlvr_env/tasks.py` |
+| 典型执行路径 | 第 5 节"典型执行路径与数据依赖" | `examples/run_demo.py` 中的 `scripted_agent` |
+| 奖励计算逻辑 | 第 6 节"奖励计算逻辑" | `verifier/reward.py` |
+| 训练集成调用方式 | 第 6 节"调用方式（训练集成）"、第 0 节第 5 步 | `examples/harness_example.py` |
+| 正确和错误结果的调用样例 | 第 7 节"调用样例输出"、第 0 节第 2 步 | `examples/run_demo.py` |
+
 ## 1. 目录结构
 
 ```
