@@ -23,7 +23,7 @@ def _tool(fn):
     """Wrap a method: record the call, convert exceptions into error payloads."""
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
-        self.call_log.append({"api": fn.__name__, "kwargs": kwargs})
+        self.call_log.append({"api": fn.__name__, "args": list(args), "kwargs": kwargs})
         try:
             return {"ok": True, "data": fn(self, *args, **kwargs)}
         except ApiError as e:

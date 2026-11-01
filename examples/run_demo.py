@@ -84,6 +84,9 @@ def main():
     scenarios = [
         ("correct answer (reference path)", correct),
         ("correct answer wrapped in text", "分析完成。<answer>%s</answer>" % correct),
+        ("PARTIAL: net_sales off by 0.5%, order_count right",
+         {"net_sales": round(json.loads(correct)["net_sales"] * 1.005, 2),
+          "order_count": json.loads(correct)["order_count"]}),
         ("WRONG: VIP judged by level>=3 (includes staff)", scripted_agent(env, task, vip_rule="level")),
         ("WRONG: counted all refund requests", scripted_agent(env, task, refund_status=None)),
         ("WRONG: used shipped instead of completed", scripted_agent(env, task, status="shipped")),

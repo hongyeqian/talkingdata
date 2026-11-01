@@ -10,34 +10,89 @@
 
 整个项目只用 Python 标准库（3.8+），无第三方依赖。
 
-## 1. 目录结构
+## 0. 评审验收指南（约 3 分钟）
 
-```
-.
-├── config.py              # 统一配置：数据规模、业务规则、API 限制、奖励阈值
-├── rlvr_env/
-│   ├── db_init.py         # 用固定随机种子生成 SQLite 数据（可复现）
-│   ├── api.py             # ShopEnv：业务 API（智能体唯一的数据入口）
-│   └── tasks.py           # 任务模板、自然语言任务解析、样例任务
-├── verifier/
-│   ├── __init__.py        # 导出 compute_reward / evaluate / ground_truth
-│   └── reward.py          # 验证引擎：参考 SQL 算真值 + 奖励函数
-├── examples/run_demo.py   # 调用样例：1 条正确路径 + 多个错误场景
-├── tests/test_core.py     # 单元测试
-├── data/                  # shop.db 生成位置（不提交，运行时自动生成）
-├── Dockerfile
-└── requirements.txt
-```
+只需要装好 Docker，不用准备任何数据或依赖。
 
-环境、验证器、配置和样例四部分互相独立。验证器不依赖 `ShopEnv`，直接用可信的参考 SQL 计算真值。
-
-## 2. 运行方式
-
-### 本地运行
+**第 1 步：克隆并构建镜像**
 
 ```bash
-python3 -m rlvr_env.db_init --force
+git clone https://github.com/hongyeqian/talkingdata.git && cd talkingdata
 ```
+
+```bash
+docker build -t rlvr-shop .
+```
+
+构建过程中会自动生成 SQLite 业务数据，并打包进镜像。
+
+**第 2 步：启动容器，自动运行调用样例**
+
+```bash
+docker run --rm rlvr-shop
+```
+
+输出末尾的 `SUMMARY` 应该如下，数据由固定随机种子生成，每次运行结果相同：
+
+```
+SUMMARY
+  1.0000  correct answer (reference path)
+  1.0000  correct answer wrapped in text
+  0.8316  PARTIAL: net_sales off by 0.5%, order_count right
+  0.0000  WRONG: VIP judged by level>=3 (includes staff)
+  0.2000  WRONG: counted all refund requests
+  0.0000  WRONG: used shipped instead of completed
+  0.0000  WRONG: platform-wide GMV shortcut
+  0.0000  INVALID: malformed answer
+  0.0000  INVALID: missing field
+```
+
+输出开头还演示了两件事：
+
+- 环境 API 的错误处理：传入非法参数、调用不存在的 API，都只返回 `{"ok": False, ...}`
+- 参考路径实际用到了 6 类 API
+
+**第 3 步：运行单元测试**
+
+```bash
+docker run --rm rlvr-shop python -m unittest discover -s tests -v
+```
+
+应该看到 5 个用例全部通过（`OK`）。
+
+**第 4 步：手动给任意答案打分**
+
+```bash
+docker run --rm rlvr-shop python -m verifier
+```
+
+这条命令列出 3 个样例任务和各自的真值。
+
+```bash
+docker run --rm rlvr-shop python -m verifier --answer '{"net_sales": 303204.48, "order_count": 39}'
+```
+
+这条命令给默认任务（华东 2026 Q3）打分。答案正确，`reward` 为 1.0。改动数值就能看到奖励下降；用 `--task "<自然语言任务>"` 可以换任务。
+
+**第 5 步：挂载本地目录，供训练框架调用**
+
+方式一：把仓库目录挂进容器，从挂载的代码导入环境和验证器。
+
+```bash
+docker run --rm -v "$PWD":/workspace -w /workspace -e PYTHONPATH=/workspace -e RLVR_DB_PATH=/app/data/shop.db rlvr-shop python examples/harness_example.py
+```
+
+方式二：只挂载训练框架自己的脚本目录，环境和验证器用镜像里 `/app` 下的版本（镜像已设置 `PYTHONPATH=/app`）。
+
+```bash
+docker run --rm -v "$PWD/examples":/harness rlvr-shop python /harness/harness_example.py
+```
+
+两种方式都会打印一个 episode 的工具调用和最终奖励。`RLVR_DB_PATH` 指定数据库路径；不指定且数据库不存在时，会在 `data/` 下自动生成。
+
+### 本地运行（不用 Docker）
+
+需要 Python 3.8+，不用安装任何第三方包。
 
 ```bash
 python3 examples/run_demo.py
@@ -47,32 +102,69 @@ python3 examples/run_demo.py
 python3 -m unittest discover -s tests -v
 ```
 
-不先跑 `db_init` 也可以：数据库不存在时，`ShopEnv` 和验证器会自动生成。
-
-### Docker
-
 ```bash
-docker build -t rlvr-shop .
+python3 -m verifier
 ```
 
-```bash
-docker run --rm rlvr-shop
+第一次运行时会自动生成 `data/shop.db`。如果想手动重建，执行 `python3 -m rlvr_env.db_init --force`。
+
+### 逐项对照题目要求
+
+| 题目要求 | 实现位置 |
+|---|---|
+| 至少 3 次独立且必要的 API 调用 | 参考路径用到 6 类 API，见第 5 节 |
+| 跨 API 关联与二次计算 | 等级、城市、客户、订单、明细、退款逐层关联，再加权求和、相减 |
+| 冗余 API 与非必要字段 | 4 个干扰 API 和多个无关字段，见第 3 节 |
+| 隐含业务约束 | 7 条，见第 3 节的表 |
+| SQLite 数据，只能通过 API 访问 | `rlvr_env/db_init.py`；`rlvr_env/api.py` 以只读方式连接数据库 |
+| 参数校验与异常处理 | `api.py` 的 `_tool` 装饰器；`verifier.evaluate` 不会抛出异常 |
+| 独立的验证模块和统一入口 | `verifier.compute_reward(task_prompt, answer) -> float` |
+| 不用大模型做验证 | 正则解析任务，参考 SQL 算真值，数值打分 |
+| 正确和错误场景的样例 | `examples/run_demo.py` |
+| 规则和阈值集中在配置里 | `config.py` |
+| 依赖声明 | `requirements.txt`（只用标准库） |
+| Docker：克隆即可构建，启动自动跑样例，支持挂载 | `Dockerfile`，见上面第 1～5 步 |
+
+## 1. 目录结构
+
+```
+.
+├── config.py                  # 统一配置：数据规模、业务规则、API 限制、奖励阈值
+├── rlvr_env/
+│   ├── db_init.py             # 用固定随机种子生成 SQLite 数据（可复现）
+│   ├── api.py                 # ShopEnv：业务 API（智能体唯一的数据入口）
+│   └── tasks.py               # 任务模板、自然语言任务解析、样例任务
+├── verifier/
+│   ├── __init__.py            # 导出 compute_reward / evaluate / ground_truth
+│   ├── __main__.py            # 命令行：python -m verifier --task ... --answer ...
+│   └── reward.py              # 验证引擎：参考 SQL 算真值 + 奖励函数
+├── examples/
+│   ├── run_demo.py            # 调用样例：正确、部分正确、错误、非法答案
+│   └── harness_example.py     # 训练框架集成示例（一个 episode）
+├── tests/test_core.py         # 单元测试
+├── data/                      # shop.db 生成位置（不提交，运行时自动生成）
+├── Dockerfile
+└── requirements.txt
 ```
 
-镜像里已经包含代码和生成好的数据库。容器启动后会自动运行 `examples/run_demo.py`，打印每个场景的奖励。
+各部分的依赖关系：
 
-把本地目录挂载进容器，供训练框架加载：
+- 环境（`rlvr_env`）、验证器（`verifier`）、配置（`config.py`）、样例（`examples`）是四个独立模块
+- 环境和验证器都只依赖 `config.py`
+- 验证器不依赖 `ShopEnv`，直接用可信的参考 SQL 计算真值
 
-```bash
-docker run --rm -v "$PWD":/workspace -w /workspace -e PYTHONPATH=/workspace rlvr-shop \
-  python -c "from verifier import compute_reward; from rlvr_env.tasks import SAMPLE_TASKS; print(compute_reward(SAMPLE_TASKS[0], '{\"net_sales\": 1, \"order_count\": 1}'))"
-```
+## 2. 设计思路
 
-在容器里运行测试：
+设计时有四个目标：
 
-```bash
-docker run --rm rlvr-shop python -m unittest discover -s tests
-```
+1. **贴近真实分析工作**：选"某季度、某地区、某类客户的净销售额"这种口径。分析师日常就做这类统计，但口径细节很多，容易出错。
+2. **必须多步完成**：数据按业务实体拆成等级、城市、客户、订单、明细、退款，分布在不同的 API 里，每一层的过滤条件依赖上一层查出来的 ID，所以单次调用拿不到答案。
+3. **防止走捷径**：
+   - 给业务术语设陷阱：VIP 由 `is_vip` 标记决定，不是按等级；"已完成"不等于"已发货"；退款有多种状态
+   - 放干扰 API：`get_sales_summary` 看起来能直接给出销售额
+   - 放干扰字段：`list_price` 目录价、`shipping_fee` 运费
+   - 加批量和分页限制：一次查不全，智能体必须处理完整的数据
+4. **验证客观、可复现**：数据由固定随机种子生成；真值由验证器用独立的参考 SQL 计算，不依赖智能体走的路径，也不依赖大模型。
 
 ## 3. 任务设计
 
@@ -157,6 +249,18 @@ get_region_cities("华东") ──> 城市列表 ──────────�
                      net_sales = 商品金额 - 已批准退款
 ```
 
+以样例任务（华东、2026 Q3）为例，每一步的实际情况如下：
+
+| 步骤 | 调用 | 目的 | 返回（样例数据） | 依赖 |
+|---|---|---|---|---|
+| 1 | `get_membership_tiers()` | 确定哪些等级算 VIP | 5 个等级，其中 `is_vip=1` 的是 T3、T4（level=9 的 T9 不是 VIP） | 无 |
+| 2 | `get_region_cities("华东")` | 把地区换成城市 | 上海、南京、厦门、合肥、杭州、苏州 | 无 |
+| 3 | `list_customers(cities=..., tier_codes=["T3","T4"])` | 找出目标客户 | 26 个客户 | 步骤 1、2 |
+| 4 | `get_orders(customer_ids=[26 个], start_date="2026-07-01", end_date="2026-09-30", status="completed")` | 找出季度内已完成的订单 | `total=39` 和订单列表；超过 100 个时要分批或翻页 | 步骤 3 |
+| 5 | `get_order_items(order_ids=[39 个])` | 计算商品成交金额 | 明细的数量、成交单价、折扣率 | 步骤 4 |
+| 6 | `get_refunds(order_ids=[39 个])` | 计算要扣除的退款 | 所有状态的退款记录，只累加 `approved` 的 | 步骤 4 |
+| 7 | 智能体自己计算 | 汇总 | `net_sales = Σ明细金额 - Σ已批准退款 = 303204.48`，`order_count = 39` | 步骤 5、6 |
+
 参考路径共 6 类 API 调用，每一步的输入都依赖前一步的输出：
 
 1. 等级代码和城市列表来自前两次调用，不能凭常识猜
@@ -166,7 +270,7 @@ get_region_cities("华东") ──> 城市列表 ──────────�
 
 最终答案需要跨 API 关联，再做二次计算（加权求和、按状态过滤、相减），任何一个 API 的返回都不能直接作为答案。
 
-样例任务（华东、2026 年第 3 季度）的真值为 `net_sales = 357180.81`，`order_count = 45`（具体数值以 demo 输出为准）。
+样例任务（华东、2026 年第 3 季度）的真值为 `net_sales = 303204.48`，`order_count = 39`。
 
 ## 6. 奖励计算逻辑（`verifier/reward.py`）
 
@@ -218,6 +322,7 @@ env.reset()
 |---|---|
 | 正确答案（参考路径） | 1.0000 |
 | 正确答案，包在自然语言文本里 | 1.0000 |
+| 部分正确：净销售额偏差 0.5%，订单数正确 | 0.8316 |
 | 错误：按 `level>=3` 判定 VIP（混入内部员工） | 0.0000 |
 | 错误：扣除了所有状态的退款 | 0.2000（订单数正确，只拿到这部分分） |
 | 错误：把"已发货"当成"已完成" | 0.0000 |
@@ -239,3 +344,10 @@ env.reset()
 - 场景只有一种任务模板，可以继续扩展，比如按品类统计、复购率等
 - 数据是合成数据，分布比较简单
 - 验证器只做数值判定，不评价推理过程，这本身也是题目要求
+
+## 10. 提交信息
+
+- 所选题目：题目一，复杂业务分析 RLVR 任务构建
+- 仓库链接：https://github.com/hongyeqian/talkingdata
+- 最终 commit SHA：以交卷时 `main` 分支的最新 commit 为准
+- 运行与验收说明：见本 README 第 0 节"评审验收指南"
