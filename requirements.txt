@@ -1,0 +1,3 @@
+# Runtime and tests use the Python 3.8+ standard library only
+# (sqlite3, json, re, random, unittest). No third-party packages are required.
+# This file is kept so `pip install -r requirements.txt` works in any pipeline.
